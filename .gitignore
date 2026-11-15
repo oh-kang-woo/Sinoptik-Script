@@ -1,0 +1,7 @@
+dist
+build
+__pycache__
+*.rar
+database_*.db
+*.spec
+venv

@@ -1,0 +1,7 @@
+arrow
+fuzzywuzzy
+xlwings
+schedule
+keyboard
+requests
+fastapi["standard"]
