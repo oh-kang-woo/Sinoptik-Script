@@ -307,7 +307,16 @@ def extract_values(workbook, sheet_name, cell_map, autosave=False):
     data['temp_max_c_txtxtx'] = 9999 if data['temp_max_c_txtxtx'] in ('////', '///') else data['temp_max_c_txtxtx']  
     data['temp_min_c_tntntn'] = 9999 if data['temp_min_c_tntntn'] in ('////', '///') else data['temp_min_c_tntntn']  
     data['evaporation_eq_indicator_ie'] = 0 if data['evaporation_eq_indicator_ie'] in (None, '') else data['evaporation_eq_indicator_ie']  
-    data['land_cond'] = 0 if data['land_cond'] in (None, '') else data['evaporation_eq_indicator_ie']  
+
+    # Pertahankan nilai Kondisi Tanah dari Excel (jangan ambil dari evaporation_eq_indicator_ie)
+    raw_land_cond = data['land_cond']
+    if raw_land_cond in (None, ''):
+        data['land_cond'] = 0
+    else:
+        land_cond = int(float(raw_land_cond))
+        if land_cond not in SOIL:
+            raise ValueError(f"Kode land_cond tidak valid: {raw_land_cond}")
+        data['land_cond'] = land_cond
       
     data['encoded_synop'] = data['encoded_synop'].strip().replace('  ', ' ')  
     temp = []
