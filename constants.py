@@ -1,57 +1,22 @@
-from configparser import ConfigParser, ExtendedInterpolation
-import os
-import sys
-
-CONFIG_FILE = "config.ini"
-if not os.path.exists(CONFIG_FILE):
-    print("File config tidak ditemukan.")
-    sys.exit()
-
-config = ConfigParser(interpolation=ExtendedInterpolation())
-config.read(CONFIG_FILE)
-
-
-def get_config(section, option, type, default=None):
-    if config.has_section(section):
-        if config.has_option(section, option):
-            if type == "bool":
-                return config.getboolean(section, option)
-            elif type == "int":
-                return config.getint(section, option)
-            elif type == "str":
-                return config.get(section, option)
-            elif type == "float":
-                return config.getfloat(section, option)
-        else:
-            return default
-    else:
-        return default
-
-
-STN_CODE = config.getint("STATION", "STN_CODE")
-STN_ID = config.get("STATION", "STN_ID")
-
-ME48_WS_NAME = config.get("EXCEL", "ME48_WS_NAME")
-PERCELL_DIFF = config.getint("EXCEL", "PERCELL_DIFF")
-PERPAGE_DIFF = config.getint("EXCEL", "PERPAGE_DIFF")
-UTC_DIFF = config.getint("EXCEL", "UTC_DIFF")
-PATH_TO_SYNOP = config.get("EXCEL", "PATH_TO_SYNOP")
-
-DB_NAME = config.get("DATABASE", "DB_NAME")
-ME48_TABLE_NAME = config.get("DATABASE", "ME48_TABLE_NAME")
-
-OBSERVER = dict(config.items("OBSERVER"))
-
-BMKGSABANG_TOKEN = config.get("BMKGSATU", "BMKGSABANG_TOKEN")
-SINOPTIK_TOKEN = config.get("BMKGSATU", "SINOPTIK_TOKEN")
-DEBUG = get_config("OTHER", "DEBUG", "bool", False)
-SYNOP_HOURS = [int(i.strip()) for i in get_config("EXCEL", "SYNOP_HOURS", "str").split(',')]
-SYNOP_HEADING_UTAMA = config.get("BMKGSATU", "SYNOP_HEADING_UTAMA")
-SYNOP_HEADING_ANTARA = config.get("BMKGSATU", "SYNOP_HEADING_ANTARA")
-SYNOP_HEADING_OTHER = config.get("BMKGSATU", "SYNOP_HEADING_OTHER")
-
-BMKGSATU_URL = config.get("BMKGSATU", "BMKGSATU_URL")
-BMKGSABANG_URL = config.get("BMKGSATU", "BMKGSABANG_URL")
+STN_CODE = 96001
+STN_ID = 'WITN'
+ME48_WS_NAME = 'ME_48'
+PERCELL_DIFF = 5
+PERPAGE_DIFF = 13
+UTC_DIFF = 7
+DB_NAME = 'database_96001.db'
+ME48_TABLE_NAME = 'me48'
+BMKGSATU_URL = 'https://bmkgsatu.bmkg.go.id'
+BMKGSABANG_URL = 'http://172.70.55.45'
+BMKGSABANG_TOKEN = '17|naGybum4Dnmwn1RyGyWMxcjBgGOByAF6Bo98kDrj598c1153'
+SINOPTIK_TOKEN = 'SABANG96001'
+PATH_TO_SYNOP = r'D:\SYNOP\Synop {YEAR}\{MONTH_NUM}. {MONTH_NAME_FULL}\MASTER SYNOP 96001\{FILENAME}.xlsx'
+SYNOP_HOURS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23]
+SYNOP_HEADING_UTAMA = 'SMID61'
+SYNOP_HEADING_ANTARA = 'SIID71'
+SYNOP_HEADING_OTHER = 'SNID61'
+DEBUG = False
+DEVICE_ID = "9e6b8c30-1b3f-41d5-ae01-e5151de502f8"
 
 MONTHS = {
     1: ['JAN', 'JANUARI'],
@@ -68,77 +33,38 @@ MONTHS = {
     12: ['DES', 'DESEMBER'],
 }
 
+OBSERVER_NAME = {
+    310: "Bonas Efendy",
+    5411: "Halomoan Nasution",
+    1523: "Maya Sartika",
+    5407: "Fitri Aulia Varian",
+    1524: "Wahyu Sukmananda",
+    1525: "Yudi Handara",
+    5412: "Bryan Edo Billyanto",
+    6069: "Fandi Maulana Akbar",
+    5406: "Izhar Nugraha"
+}
+
+
+OBSERVER_ID = {
+    "default" : 5411,
+    "maya" : 1523,
+    "wahyu" : 1524,
+    "yudi" : 1525,
+    "bonas" : 310,
+    "izhar" : 5406,
+    "fitri" : 5407,
+    "halomoan" : 5411,
+    "edo" : 5412,
+    "fandi": 6069
+}
+
 CANNOT_EMPTY_LIST = [
     "pressure_qff_mb_derived",
     "pressure_qfe_mb_derived",
     "temp_drybulb_c_tttttt",
     "temp_wetbulb_c"
 ]
-
-ME48_LIST = [
-    "wind_indicator_iw",
-    "wind_dir_deg_dd",
-    "wind_speed_ff",
-    "visibility_vv",
-    "weather_indicator_ix",
-    "present_weather_ww",
-    "past_weather_w1",
-    "past_weather_w2",
-    "pressure_temp_c",
-    "pressure_reading_mb",
-    "pressure_tend_3h_mb_ppp",
-    "pressure_qff_mb_derived",
-    "pressure_qfe_mb_derived",
-    "pressure_tend_24h_mb_ppp",
-    "temp_drybulb_c_tttttt",
-    "temp_wetbulb_c",
-    "temp_dewpoint_c_tdtdtd",
-    "relative_humidity_pc",
-    "temp_max_c_txtxtx",
-    "temp_min_c_tntntn",
-    "rainfall_indicator_ir",
-    "rainfall_last_mm",
-    "rainfall_6h_rrr",
-    "rainfall_24h_rrrr",
-    "cloud_low_type_cl",
-    "cloud_low_base_1",
-    "cloud_low_peak_1",
-    "cloud_low_base_2",
-    "cloud_low_peak_2",
-    "cloud_low_dir_1",
-    "cloud_low_cover_oktas",
-    "cloud_elevation_angle_ec_1",
-    "cloud_med_cover_oktas",
-    "cloud_high_cover_oktas",
-    "cloud_med_type_cm",
-    "cloud_high_type_ch",
-    "cloud_med_dir_1",
-    "cloud_med_base_1",
-    "cloud_high_dir_1",
-    "cloud_high_base_1",
-    "cloud_cover_oktas_m",
-    "cloud_layer_1_type_c",
-    "cloud_layer_1_height_m_hshs",
-    "cloud_layer_1_amt_oktas_ns",
-    "cloud_layer_2_type_c",
-    "cloud_layer_2_height_m_hshs",
-    "cloud_layer_2_amt_oktas_ns",
-    "cloud_layer_3_type_c",
-    "cloud_layer_3_height_m_hshs",
-    "cloud_layer_3_amt_oktas_ns",
-    "cloud_layer_4_type_c",
-    "cloud_layer_4_height_m_hshs",
-    "cloud_layer_4_amt_oktas_ns",
-    "evaporation_eq_indicator_ie",
-    "solar_rad_24h_jcm2_f24",
-    "sunshine_h_sss",
-    "evaporation_24hours_mm_eee",
-    "land_cond",
-    "land_note",
-    "observer_id",
-    "encoded_synop"
-]
-
 
 ME48_CELL_MAP = {
     "wind_indicator_iw": "C10",
@@ -171,6 +97,7 @@ ME48_CELL_MAP = {
     "cloud_low_base_2": "S12",
     "cloud_low_peak_2": "S13",
     "cloud_low_dir_1": "T10",
+    "cloud_low_dir_true_da_1": "T10",
     "cloud_low_cover_oktas": "T12",
     "cloud_elevation_angle_ec_1": "T11",
     "cloud_med_cover_oktas": "W10",
@@ -194,6 +121,9 @@ ME48_CELL_MAP = {
     "cloud_layer_4_type_c": "AF13",
     "cloud_layer_4_height_m_hshs": "AH13",
     "cloud_layer_4_amt_oktas_ns": "AJ13",
+    "cloud_low_type_1": "P10",
+    "cloud_med_type_1": "Z10",
+    "cloud_high_type_1": "Z12",
     "evaporation_eq_indicator_ie": "AL10",
     "solar_rad_24h_jcm2_f24": "AL12",
     "sunshine_h_sss": "AL13",
@@ -232,19 +162,23 @@ SINOPTIK_CELL_MAP = {
     "rainfall_6h_rrr": "Q12",
     "rainfall_24h_rrrr": "Q13",
     "cloud_low_type_cl": "T10",
+    "cloud_low_type_1": "T10",
     "cloud_low_base_1": "T12",
     "cloud_low_peak_1": "T13",
     "cloud_low_base_2": "V12",
     "cloud_low_peak_2": "V13",
     "cloud_low_dir_1": "W10",
+    "cloud_low_dir_true_da_1": "W10",
     "cloud_elevation_angle_ec_1": "W11",
     "cloud_low_cover_oktas": "W12",
     "cloud_med_cover_oktas": "Z10",
     "cloud_med_type_cm": "AC10",
+    "cloud_med_type_1": "AC10",
     "cloud_med_dir_1": "AE10",
     "cloud_med_base_1": "AE11",
     "cloud_high_cover_oktas": "Z12",
     "cloud_high_type_ch": "AC12",
+    "cloud_high_type_1": "AC12",
     "cloud_high_dir_1": "AE12",
     "cloud_high_base_1": "AE13",
     "cloud_cover_oktas_m": "AG10",
@@ -268,12 +202,12 @@ SINOPTIK_CELL_MAP = {
     "land_note": "AX12",
     "observer_id": "AX12",
     "encoded_synop": "A14:AX14",
-    "appp": "P14",  # special key
-    "nschshs": "W14",  # special
-    "57cde1": 'AI14',  # special
-    "57cde2": 'AM14',  # special
-    "80chshs1": 'BA14',  # special
-    "80chshs2": 'BC14',  # special
+    "5appp": "P14",  # special keys, cells are in encoded_synop"s line
+    "8nhclcmch": "W14",
+    "57cde1": "AI14",
+    "57cde2": "AM14",
+    "80chshs1": "BA14",
+    "80chshs2": "BC14",
 }
 
 
@@ -295,7 +229,6 @@ ME48_ROUNDED_VAL = {
     "pressure_tend_24h_mb_ppp": 1,
     "evaporation_24hours_mm_eee": 1,
 }
-
 
 WW = {
     "cld dev unk": 0,
@@ -333,6 +266,14 @@ WW = {
     "re sh of ra": 25,
     "re fog": 28,
     "re ts": 29,
+    "inter sl dz": 50,
+    "cns sl dz": 51,
+    "inter mod dz": 52,
+    "cns mod dz": 53,
+    "inter heavy dz": 54,
+    "cns heavy dz": 55,
+    "sl dz fr": 56,
+    "mod/heavy dz fr": 57,
     "inter sl ra": 60,
     "cns sl ra": 61,
     "inter mod ra": 62,
@@ -360,8 +301,9 @@ WW = {
 }
 
 W1W2 = {
-    "cloudy -": 1,
-    "cloudy-": 1,
+    "cloudy -": 0,
+    "cloudy-": 0,
+    "cloudy": 1,
     "cloudy+": 2,
     "cloudy +": 2,
     "sand": 3,
@@ -376,8 +318,7 @@ W1W2 = {
     "thunderstorm": 9,
 }
 
-ARAH = {
-    "-": "-",
+CLOUD_DIR = {
     "stnr": 0,
     "north east": 1,
     "east": 2,
@@ -390,45 +331,36 @@ ARAH = {
     "/": 9,
 }
 
-CMCH_TYPE = {
-    "-": "-",
-    "ci": 0,
-    "cc": 1,
-    "cs": 2,
-    "ac": 3,
-    "as": 4,
-    "ns": 5,
-    "sc": 6,
-    "st": 7,
-    "cu": 8,
-    "cb": 9,
-    "/": "cloud not visible",
+CLOUD_TYPE = {
+    "ci": "0",
+    "cc": "1",
+    "cs": "2",
+    "ac": "3",
+    "as": "4",
+    "ns": "5",
+    "sc": "6",
+    "st": "7",
+    "cu": "8",
+    "cb": "9",
+    "/": "/",
+    "acas": "3", #temporary, belum dipisah
+    "cb/sc": "9",
+    "cb/cu": "9",
 }
 
-
-IW = {3: 3, 4: 4}
-
-IX = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7}
-
-IR = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
-
-IE = {"-": "-", 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9}
-
-CL_TYPE = {"cu": 2, "cb": 9, "cs": 2, "sc": 4}
-
-CL_ELEV = {
-    0: 0,
-    30: 2,
-    20: 3,
-    15: 4,
-    12: 5,
-    9: 6,
-    7: 7,
-    6: 8,
-    5: 9
+CLCMCH_TYPE = {
+    "sc": "5",
+    "cu": "2",
+    "cb": "9",
+    "ac": "3",
+    "as": "2",
+    "acas": "7",
+    "ci": "2",
+    "cb/sc": "9",
+    "cb/cu": "9",
 }
 
-EC = {
+CLOUD_ELEV = {
     0: 0,
     45: 1,
     30: 2,
@@ -441,64 +373,43 @@ EC = {
     5: 9,
 }
 
-OKTA = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 8: 8, 9: 9, "/": "/"}
-
-SOIL = {0: 0, 1: 1, 2: 2, 3: 3}
-
-WIND_CODE = {
-    "CALM": 0,
-    "calm": 0,
-    "NE": 1,
-    "E": 2,
-    "SE": 3,
-    "S": 4,
-    "SW": 5,
-    "W": 6,
-    "NW": 7,
-    "N": 8,
+OKTAS = {
+    0: "0",
+    1: "1",
+    2: "2",
+    3: "3",
+    4: "4",
+    5: "5",
+    6: "6",
+    7: "7",
+    8: "8",
+    9: "9",
+    "/": "/"
 }
 
-ME48_OPTS = {
-    "wind_indicator_iw": IW,
-    "weather_indicator_ix": IX,
-    "rainfall_indicator_ir": IR,
-    "evaporation_eq_indicator_ie": IE,
+
+ME48_OPTIONS = {
+    "cloud_low_dir_true_da_1": CLOUD_DIR,
     "present_weather_ww": WW,
     "past_weather_w1": W1W2,
     "past_weather_w2": W1W2,
-    "cloud_low_dir_1": ARAH,
-    "cloud_med_dir_1": ARAH,
-    "cloud_high_dir_1": ARAH,
-    "cloud_elevation_angle_ec_1": EC,
-    "cloud_med_cover_oktas": OKTA,
-    "cloud_high_cover_oktas": OKTA,
-    "cloud_cover_oktas_m": OKTA,
-    "cloud_layer_1_amt_oktas_ns": OKTA,
-    "cloud_layer_2_amt_oktas_ns": OKTA,
-    "cloud_layer_3_amt_oktas_ns": OKTA,
-    "cloud_layer_4_amt_oktas_ns": OKTA,
-    "cloud_layer_1_type_c": CMCH_TYPE,
-    "cloud_layer_2_type_c": CMCH_TYPE,
-    "cloud_layer_3_type_c": CMCH_TYPE,
-    "cloud_layer_4_type_c": CMCH_TYPE,
-    "land_cond": SOIL,
-    "observer_id": OBSERVER,
-}
-
-
-CLOUD_DEFAULT_CODE = '84572'
-
-OBSERVER_ID = {
-    'default' : 5407,
-    'maya' : 1523,
-    'wahyu' : 1524,
-    'yudi' : 1525,
-    'bonas' : 310,
-    'izhar' : 5406,
-    'fitri' : 5407,
-    'halomoan' : 5411,
-    'edo' : 5412,
-    'fandi': 6069
+    "cloud_low_dir_1": CLOUD_DIR,
+    "cloud_med_dir_1": CLOUD_DIR,
+    "cloud_high_dir_1": CLOUD_DIR,
+    "cloud_elevation_angle_ec_1": CLOUD_ELEV,
+    "cloud_layer_1_type_c": CLOUD_TYPE,
+    "cloud_layer_2_type_c": CLOUD_TYPE,
+    "cloud_layer_3_type_c": CLOUD_TYPE,
+    "cloud_low_type_1": CLOUD_TYPE,
+    "cloud_med_type_1": CLOUD_TYPE,
+    "cloud_high_type_1": CLOUD_TYPE,
+    "cloud_low_type_cl": CLCMCH_TYPE,
+    "cloud_med_type_cm": CLCMCH_TYPE,
+    "cloud_high_type_ch": CLCMCH_TYPE,
+    "cloud_low_cover_oktas": OKTAS,
+    "cloud_med_cover_oktas": OKTAS,
+    "cloud_high_cover_oktas": OKTAS,
+    "cloud_cover_oktas_m": OKTAS,
 }
 
 DATA_SINOPTIK = {

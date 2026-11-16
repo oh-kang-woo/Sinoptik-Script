@@ -1,10 +1,12 @@
 from fastapi import BackgroundTasks, FastAPI, Depends, HTTPException
-from typing import Optional, Union, Callable
+from fastapi.responses import StreamingResponse
+from typing import Optional, Union
 from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel
 from utils import *
-import uvicorn
 import asyncio
+import uvicorn
+from uvicorn.config import LOGGING_CONFIG
 
 
 app = FastAPI()
@@ -14,11 +16,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 class SinoptikInputData(BaseModel):
     data_timestamp: str
     created_by: Optional[str] = None
-    wind_dir_deg_dd: Optional[str] = None
+    wind_dir_deg_dd: Optional[Union[int, str]] = None
     wind_speed_ff: Optional[float] = None
     pressure_qfe_mb_derived: Optional[float] = None
     temp_drybulb_c_tttttt: Optional[float] = None
     temp_dewpoint_c_tdtdtd: Optional[float] = None
+    temp_wetbulb_c: Optional[float] = None
     relative_humidity_pc: Optional[int] = None
     rainfall_last_mm: Optional[float] = None
     rainfall_6h_rrr: Optional[float] = None
@@ -38,181 +41,6 @@ def verify_token(token: str = Depends(oauth2_scheme)):
         raise HTTPException(status_code=401, detail="Invalid authentication credentials")
     return token
 
-
-def read_excel(timestamp):
-    "Read data 3 hours before, date based on timestamp"
-    synop_file = get_synop_path(PATH_TO_SYNOP, timestamp.year, timestamp.month, timestamp.day)
-    sheet_name = get_sheet_name(timestamp.hour)
-    cell_map = generate_new_sinoptik_cell_map(timestamp.hour, SINOPTIK_CELL_MAP)
-    # ganti nilai cell perawanan
-    cell_map['nschshs'] = get_cloud_cell(timestamp.hour)
-    cell_map['57cde1'] = get_convective_cloud_cell(timestamp.hour)[0]
-    cell_map['57cde2'] = get_convective_cloud_cell(timestamp.hour)[1]
-    try:
-        wb = open_workbook(synop_file)
-        data = extract_values(wb, sheet_name, cell_map)
-    except Exception as e:
-        print_with_timestamp(e)
-    
-    return data
-    
-
-def write_excel(data: dict, callback: Callable = None):
-    print_with_timestamp(f'Mengisi data sinoptik {data["data_timestamp"]} ke excel...')
-    timestamp = arrow.get(data["data_timestamp"])
-    data_before = {}  # data dari 3 jam sebelumnya
-    
-    try:
-        year = timestamp.year
-        month = timestamp.month
-        day = timestamp.day
-        hour = timestamp.hour        
-        synop_file = get_synop_path(PATH_TO_SYNOP, year, month, day)
-        sheet_name = get_sheet_name(hour)
-        cell_map = generate_new_sinoptik_cell_map(hour, SINOPTIK_CELL_MAP)
-
-        # ganti nilai cell perawanan
-        cell_map["nschshs"] = get_cloud_cell(hour)
-        cell_map['57cde1'] = get_convective_cloud_cell(hour)[0]
-        cell_map['57cde2'] = get_convective_cloud_cell(hour)[1]
-        cell_map['80chshs1'] = get_cl_peak_cell(hour)[0]
-        cell_map['80chshs2'] = get_cl_peak_cell(hour)[1]
-
-        # data 3 hours before
-        for h in range(3, 0, -1):
-            dt_before = timestamp.shift(hours=-h)
-            prev_data = read_excel(dt_before)
-            data_before[h] = prev_data  # prev_data[1] = data 1 jam sebelumnya
-
-        # data 24 hours before, just extract qfe
-        if hour in (0, 12):
-            dt24_before = timestamp.shift(hours=-24)
-            prev24_data = read_excel(dt24_before)
-    except Exception as e:
-        print_with_timestamp(e)
-
-    try:
-
-        wb = open_workbook(synop_file)
-        ws = wb.sheets[sheet_name]
-        try:
-            if hour in (0, 6, 12, 18):
-                ws.select()
-        except Exception as e:
-            print_with_timestamp(e)
-
-        for key in ('wind_dir_deg_dd', 'wind_speed_ff', 'pressure_qfe_mb_derived', 'pressure_qff_mb_derived', 
-                    'temp_drybulb_c_tttttt', 'temp_wetbulb_c'):
-            # don't override
-            if not ws.range(cell_map[key]).value:
-                ws.range(cell_map['wind_dir_deg_dd']).value = data["wind_dir_deg_dd"]
-                ws.range(cell_map['wind_speed_ff']).value = data["wind_speed_ff"]
-                ws.range(cell_map['pressure_qfe_mb_derived']).value = data["pressure_qfe_mb_derived"]
-                ws.range(cell_map['pressure_qff_mb_derived']).value = data["pressure_qff_mb_derived"]
-                ws.range(cell_map['temp_drybulb_c_tttttt']).value = data["temp_drybulb_c_tttttt"]
-                ws.range(cell_map['temp_wetbulb_c']).value = data["temp_wetbulb_c"]
-
-        try:
-            if hour in (0, 12):
-                if not ws.range(cell_map['pressure_tend_24h_mb_ppp']).value and prev24_data['pressure_qfe_mb_derived']:
-                    ws.range(cell_map['pressure_tend_24h_mb_ppp']).value = round(data['pressure_qfe_mb_derived'] - prev24_data['pressure_qfe_mb_derived'], 1)
-                if hour == 12:
-                    if not ws.range(cell_map['temp_max_c_txtxtx']).value:
-                        # bug garing
-                        if data['tx']:
-                            if '/' not in str(data['temp_max_c_txtxtx']):
-                                ws.range(cell_map['temp_max_c_txtxtx']).value = data["temp_max_c_txtxtx"]
-                elif hour == 0:
-                    if not ws.range(cell_map['temp_min_c_tntntn']).value:
-                        if data['temp_min_c_tntntn']:
-                            if '/' not in str(data['temp_min_c_tntntn']):
-                                ws.range(cell_map['temp_min_c_tntntn']).value = data["temp_min_c_tntntn"]
-        except Exception as e:
-            print_with_timestamp(e)
-
-        try:
-            if data_before[1]:
-                for key in ('visibility_vv', 'weather_indicator_ix', 'present_weather_ww', 'past_weather_w1', 
-                            'past_weather_w2', 'rainfall_indicator_ir', 'cloud_low_type_cl', 'cloud_low_base_1', 
-                            'cloud_low_peak_1', 'cloud_low_dir_1', 'cloud_elevation_angle_ec_1', 'cloud_low_cover_oktas', 
-                            'cloud_med_cover_oktas', 'cloud_high_cover_oktas', 'cloud_med_type_cm', 'cloud_high_type_ch', 
-                            'cloud_med_dir_1', 'cloud_med_base_1', 'cloud_high_dir_1', 'cloud_high_base_1',
-                            'cloud_cover_oktas_m', 'cloud_layer_1_type_c', 'cloud_layer_1_height_m_hshs', 'cloud_layer_1_amt_oktas_ns',
-                            'cloud_layer_2_type_c', 'cloud_layer_2_height_m_hshs', 'cloud_layer_2_amt_oktas_ns', 'land_cond', 'encoded_synop'):
-                    if not ws.range(cell_map[key]).value:
-                        if key == 'weather_indicator_ix':
-                            ws.range(cell_map[key]).value = 2
-                        elif key == 'present_weather_ww':
-                            ws.range(cell_map[key]).value = 'Cld Unch'
-                        elif key in ('past_weather_w1', 'past_weather_w2'):
-                            ws.range(cell_map[key]).value = 'Cloudy +'
-                        elif key == 'rainfall_indicator_ir':
-                            ws.range(cell_map[key]).value = 3
-                        else:
-                            ws.range(cell_map[key]).value = data_before[1][key]
-
-                    # awan konvektif
-                    try:
-                        if key == 'cloud_low_base_1':
-                            if ws.range(cell_map['cloud_low_type_cl']).value:
-                                cl_val = ws.range(cell_map['cloud_low_type_cl']).value.lower()
-                                dl = str(ws.range(cell_map['cloud_low_dir_1']).value).lower()
-                                elev = ws.range(cell_map['cloud_elevation_angle_ec_1']).value
-                                if cl_val in ('cu', 'cu/sc'):
-                                    if dl and elev:
-                                        ws.range(cell_map['cloud_low_base_1']).value = '8' + str(ARAH[dl]) + str(CL_ELEV[int(elev)])
-                                elif cl_val in ('cb', 'cb/sc'):
-                                    if dl and elev:
-                                        ws.range(cell_map['cloud_low_base_1']).value = '9' + str(ARAH[dl]) + str(CL_ELEV[int(elev)])
-                                elif cl_val in ('cb/cu'):
-                                    if dl and elev:
-                                        ws.range(cell_map['cloud_low_base_1']).value = '9' + str(ARAH[dl]) + str(CL_ELEV[int(elev)])
-                                        ws.range(cell_map['cloud_low_peak_1']).value = '8' + str(ARAH[dl]) + str(CL_ELEV[int(elev)])
-
-                        elif key == 'cloud_high_base_1':
-                            if ws.range(cell_map['cloud_low_type_cl']).value:
-                                cl_val = ws.range(cell_map['cloud_low_type_cl']).value.lower()
-                                if ws.range(cell_map['cloud_low_peak_1']).value:
-                                    hshs = int(ws.range(cell_map['cloud_low_peak_1']).value)
-                                    cl_peak = calculate_hshs(hshs)
-                                if cl_val == 'cu':
-                                    if cl_peak:
-                                        ws.range(cell_map['cloud_high_base_1']).value = '8' + str(cl_peak)
-                                elif cl_val == 'cb':
-                                    if cl_peak:
-                                        ws.range(cell_map['cloud_high_base_1']).value = '9' + str(cl_peak)
-                                elif cl_val in ('cb/cu'):
-                                    hshs2 = int(ws.range(cell_map['cloud_layer_2_amt_oktas_ns']).value)
-                                    cl_peak2 = calculate_hshs(hshs2)
-                                    if cl_peak:
-                                        ws.range(cell_map['cloud_high_base_1']).value = '8' + str(cl_peak)
-                                    if cl_peak2:
-                                        ws.range(cell_map['cloud_high_base_1']).value = '9' + str(cl_peak2)
-
-                    except Exception as e:
-                        print_with_timestamp(e)
-
-            # isi data tendency per 3 jam
-            if hour % 3 == 0:
-                plist = [data_before[i]['pressure_qff_mb_derived'] for i in range(3, 0, -1)] + [data['pressure_qff_mb_derived']]
-                tendency = calculate_tendency(plist)
-                ws.range(cell_map['appp']).value = tendency
-                if hour == 0:
-                    if not ws.range(cell_map['appp']).value:
-                        ws.range(cell_map['appp']).value = round(plist[3] - plist[0], 1)
-
-        except Exception as e:
-            print_with_timestamp(e)
-                
-        wb.save()
-
-        # Call the callback on complete
-        if callback:
-            callback()
-
-    except Exception as e:
-        print_with_timestamp(e)
-
     
 @app.get("/sinoptik/fetch")
 async def fetch_sinoptik_data(timestamp: str, bg_task: BackgroundTasks, token: str = Depends(verify_token), user_id: Optional[str] = None):
@@ -227,17 +55,19 @@ async def fetch_sinoptik_data(timestamp: str, bg_task: BackgroundTasks, token: s
         # Membaca output secara real-time
         stdout, stderr = await process.communicate()
 
-        # Cetak hasil output ke console
-        if stdout:
-            print_with_timestamp(f"\n{stdout.decode()}")
-        if stderr:
-            print_with_timestamp(f"\n{stderr.decode()}")
+        # Ambil output stdout & stderr
+        stdout_text = stdout.decode().strip() if stdout else ""
+        stderr_text = stderr.decode().strip() if stderr else ""
 
-        # Periksa status proses
-        if process.returncode == 0:
-            return {"status": "success", "message": f"Data sinoptik {timestamp} berhasil diambil."}
-        else:
-            raise HTTPException(status_code=500, detail=f"Terjadi kesalahan saat mengambil data sinoptik.")
+        # Cetak output ke console
+        if stdout_text:
+            print_with_timestamp(f"\n{stdout_text}")
+
+        if process.returncode != 0:
+            last_line = stderr_text.splitlines()[-1] if stderr_text else "Terjadi kesalahan saat mengambil data sinoptik."
+            raise HTTPException(status_code=500, detail=last_line)
+
+        return {"status": "success", "message": f"Data sinoptik {timestamp} berhasil diambil."}
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"{str(e)}")
@@ -249,19 +79,13 @@ def post_data(data: SinoptikInputData, bg_task: BackgroundTasks, token: str = De
         # Mengonversi Pydantic model menjadi dictionary
         data_dict = data.model_dump()
 
-        # Menghitung tbb menggunakan fungsi calculate_tbb  
-        tbb = calculate_tbb(data_dict['temp_drybulb_c_tttttt'], data_dict['relative_humidity_pc'], data_dict['temp_dewpoint_c_tdtdtd'])  
-        data_dict.update({'temp_wetbulb_c': tbb})  
+        # Sebelum 1 Juni 2025 perhitungan angin dan suhu bola basah masih menggunakan fungsi
+        # normalize_data dan calculate_tbb di utils.py
+        # Sekarang, perhitungan angin dan suhu bola basah dilakukan di server bmkgsabang
 
-        # Memeriksa apakah arah angin mengandung simbol '/'
-        if "/" in data_dict['wind_dir_deg_dd']:  
+        # Jika data angin AWS dan AWOS tidak ada
+        if data_dict['wind_dir_deg_dd'] == -9999:
             data_dict['wind_dir_deg_dd'] = get_previous_wind_direction(data_dict['data_timestamp'])
-            
-        else:
-            data_dict['wind_dir_deg_dd'] = int(data_dict['wind_dir_deg_dd'])  
-
-        # Menormalisasi data di data_dict  
-        normalized_data = normalize_data(data_dict)
 
         def on_write_complete():
             url = BMKGSABANG_URL + "/client/sinoptik/sinoptik-data-written-to-excel"
@@ -278,12 +102,65 @@ def post_data(data: SinoptikInputData, bg_task: BackgroundTasks, token: str = De
 
 
         # Menambahkan tugas latar belakang untuk menulis ke Excel  
-        bg_task.add_task(write_excel, normalized_data, callback=on_write_complete)
+        bg_task.add_task(write_excel, data_dict, callback=on_write_complete)
       
-        return {"status": "success", "message": "Data sinoptik berhasil diinput ke excel."}
+        return {"status": "success", "message": f"Data sinoptik {data_dict['data_timestamp']} berhasil diinput ke excel."}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+    
+
+@app.get("/sinoptik/screenshot")
+async def capture_and_upload_screenshot(token: str = Depends(verify_token), bg_task: BackgroundTasks = None):
+    """Menjalankan proses pengambilan screenshot dan upload dalam background."""
+    try:
+        take_screenshot()
+        bg_task.add_task(upload_image)
+
+        return {"status": "success", "message": "Screenshot sedang diproses dan diunggah."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sinoptik/restart-excel")
+def restart_excel(token: str = Depends(verify_token)):
+    result = kill_excel_processes_and_reload()
+    return {
+        "status": "success" if result == 0 else "error",
+        "message": "Program excel sinoptik sudah direstart."
+    }
+
+
+@app.get("/app/cctv")
+def webcam_stream():
+    return StreamingResponse(
+        generate_video(),
+        media_type='multipart/x-mixed-replace; boundary=frame',
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
+    )
+
+
+@app.get("/app/cctv-audio")
+def stream_audio():
+    return StreamingResponse(generate_audio(), media_type="audio/wav")
+
+
+def run_server():
+    LOGGING_CONFIG["formatters"]["default"]["fmt"] = "%(asctime)s\t%(message)s"
+    LOGGING_CONFIG["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+
+    LOGGING_CONFIG["formatters"]["access"]["fmt"] = '%(asctime)s\t%(client_addr)s - "%(request_line)s" %(status_code)s'
+    LOGGING_CONFIG["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
+
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_config=LOGGING_CONFIG, access_log=DEBUG)
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    try:
+        start_caddy()
+        run_server()
+    finally:
+        stop_caddy()
