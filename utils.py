@@ -11,15 +11,30 @@ import urllib3
 import datetime
 import sqlite3
 import xlwings
+import mss
+import subprocess
+import signal
+import time
+import cv2
+import openpyxl
+import pyaudio
+import warnings
+import psutil
+from typing import Callable
 from fuzzywuzzy import process
+from termcolor import colored
 from constants import *
 
 
 # disable InsecureRequestWarning
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-token = None  
-token_expiration = None 
+# Nonaktifkan warning openpyxl
+warnings.filterwarnings("ignore", message="DrawingML support is incomplete and limited to charts and images only.")
+
+
+token = None
+token_expiration = None
 
 SP = ' '
 CR = '\r'
@@ -64,10 +79,17 @@ def input_with_default(prompt_='', default_=''):
     return input(prompt_)
 
 
-def print_with_timestamp(message):
-    """Cetak pesan dengan timestamp di depannya"""
+def print_with_timestamp(message, level='info'):
+    """Cetak pesan dengan timestamp di depannya
+    level debug untuk pesan yang hanya diprint saat DEBUG True
+    level error akan tercetak warna merah"""
+    if level == 'debug' and not DEBUG:
+        return
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{timestamp}\t{message}")
+    if level == 'error':
+        print(colored(f"{timestamp}\t{message}", 'red'))
+    else:
+        print(f"{timestamp}\t{message}")
 
 
 def round_half_nearest_odd(n):
@@ -80,26 +102,26 @@ def round_half_nearest_odd(n):
             return math.floor(n)
     else:
         return round(n)
-    
+
 
 def parse_timestamp(timestamp):
     """
     Parse a timestamp string into a datetime object.
-    
+
     :param timestamp: The timestamp string to parse in 'YYYYMMDDHH' format
     :return: A datetime object representing the parsed timestamp or None if parsing fails.
     """
-    
+
     try:
         # Attempt to parse the timestamp using the current format
         dt = arrow.get(timestamp, 'YYYYMMDDHH')
-        
+
         # Convert the Arrow object to a datetime object
         return dt.datetime  # Return the datetime object directly
     except arrow.parser.ParserError:
         # Continue to the next format if parsing fails
         print_with_timestamp('Kesalahan format timestamp')
-    
+
     # If none of the formats matched, handle the error
     print_with_timestamp(f"Error: Invalid timestamp format. Received: {timestamp}")
     return None  # Return None if parsing fails
@@ -115,13 +137,13 @@ def get_synop_path(path_template, year, month, day):
         .replace('{MONTH_NAME_FULL}', MONTHS[month][1])\
         .replace('{MONTH_NAME_SHORT}', MONTHS[month][0])\
         .replace('{FILENAME}', str(day))
-    
+
     if not os.path.exists(path):
         # Coba cek variasi nama folder tanpa spasi
         alternate_path = path.replace('. ', '.')
         if os.path.exists(alternate_path):
             return alternate_path
-            
+
         print_with_timestamp('File tidak ditemukan.')
         print_with_timestamp('Periksa kembali nama-nama folder dan file')
         raise FileNotFoundError('File tidak ditemukan.')
@@ -161,25 +183,22 @@ def generate_new_me48_cell_map(hour, old_cell_map):
     """return new me48_dict with new cells position, jam UTC"""
     new_cell_map = {}
     for key, val in old_cell_map.items():
-        if key == 'data_timestamp': # fix value
-            new_cell_map['data_timestamp'] = old_cell_map['data_timestamp']
-            continue
-        else:
-            if hour in [0, 1, 2, 3, 4, 5]:
-                diff = hour * PERCELL_DIFF
-            elif hour in [6, 7, 8, 9, 10, 11]:
-                diff = hour * PERCELL_DIFF + (PERPAGE_DIFF*1)
-            elif hour in [12, 13, 14, 15, 16, 17]:
-                diff = hour * PERCELL_DIFF + (PERPAGE_DIFF*2)
-            elif hour in [18, 19, 20, 21, 22, 23]:
-                diff = hour * PERCELL_DIFF + (PERPAGE_DIFF*3)
+
+        if hour in [0, 1, 2, 3, 4, 5]:
+            diff = hour * PERCELL_DIFF
+        elif hour in [6, 7, 8, 9, 10, 11]:
+            diff = hour * PERCELL_DIFF + (PERPAGE_DIFF*1)
+        elif hour in [12, 13, 14, 15, 16, 17]:
+            diff = hour * PERCELL_DIFF + (PERPAGE_DIFF*2)
+        elif hour in [18, 19, 20, 21, 22, 23]:
+            diff = hour * PERCELL_DIFF + (PERPAGE_DIFF*3)
 
         cell = extract_cell_pos(val)
         if len(cell) == 2:
             new_cell_map[key] = cell[0]+str(int(cell[1])+diff)
         elif len(cell) == 4:
             new_cell_map[key] = cell[0]+str(int(cell[1])+diff)+':'+cell[2]+str(int(cell[3])+diff)
-        
+
     return new_cell_map
 
 
@@ -188,29 +207,26 @@ def generate_new_sinoptik_cell_map(hour, old_cell_map):
     PERCELL_DIFF = 5
     new_cell_map = {}
     for key, val in old_cell_map.items():
-        if key == 'data_timestamp': # fix value
-            new_cell_map['data_timestamp'] = old_cell_map['data_timestamp']
-            continue
-        else:
-            if hour in [0, 6, 12, 18]:
-                diff = PERCELL_DIFF * 0
-            elif hour in [1, 7, 13, 19]:
-                diff = PERCELL_DIFF * 1
-            elif hour in [2, 8, 14, 20]:
-                diff = PERCELL_DIFF * 2
-            elif hour in [3, 9, 15, 21]:
-                diff = PERCELL_DIFF * 3
-            elif hour in [4, 10, 16, 22]:
-                diff = PERCELL_DIFF * 4
-            elif hour in [5, 11, 17, 23]:
-                diff = PERCELL_DIFF * 5 
+
+        if hour in [0, 6, 12, 18]:
+            diff = PERCELL_DIFF * 0
+        elif hour in [1, 7, 13, 19]:
+            diff = PERCELL_DIFF * 1
+        elif hour in [2, 8, 14, 20]:
+            diff = PERCELL_DIFF * 2
+        elif hour in [3, 9, 15, 21]:
+            diff = PERCELL_DIFF * 3
+        elif hour in [4, 10, 16, 22]:
+            diff = PERCELL_DIFF * 4
+        elif hour in [5, 11, 17, 23]:
+            diff = PERCELL_DIFF * 5
 
         cell = extract_cell_pos(val)
         if len(cell) == 2:
             new_cell_map[key] = cell[0]+str(int(cell[1])+diff)
         elif len(cell) == 4:
             new_cell_map[key] = cell[0]+str(int(cell[1])+diff)+':'+cell[2]+str(int(cell[3])+diff)
-        
+
     return new_cell_map
 
 
@@ -228,7 +244,7 @@ def clean_value(val, decimal=None):
                     return round(float(val))
             except:
                 pass
-        
+
         if val == '' or val.isspace():
             return None
 
@@ -236,100 +252,408 @@ def clean_value(val, decimal=None):
             return val
 
 
-def open_workbook(fname, visible=True):
-    """Open excel synop file"""
-    try:
-        wb = xlwings.Book(fname, update_links=False, read_only=False, ignore_read_only_recommended=True)
+def open_workbook(fname, engine='xlwings'):
+    """Open excel synop file using xlwings or openpyxl"""
+    wb = None
+    if engine == 'xlwings':
+        try:
+            wb = xlwings.Book(fname, update_links=False, read_only=False, ignore_read_only_recommended=True)
 
-    except FileNotFoundError:
-        print_with_timestamp(f'File {fname} tidak ditemukan.')
-        raise FileNotFoundError(f"File {fname} tidak ditemukan. Periksa kembali path dan nama file.")
-    
-    except OSError:
-        wb = xlwings.Book(fname)
+        except FileNotFoundError:
+            print_with_timestamp(f'File {fname} tidak ditemukan.')
+            raise FileNotFoundError(f"File {fname} tidak ditemukan. Periksa kembali path dan nama file.")
 
-    except ValueError:
-        import os
-        wb_name = fname.split(os.sep)[-1]
-        wb = xlwings.Book(wb_name)
-        if wb.fullname != fname:
-            print_with_timestamp(f'Error. Tidak bisa membuka 2 file {wb_name} bersamaan. Close file terlebih dahulu dan jalankan ulang program.')
-            time.sleep(10)
-            raise RuntimeError(f"Error membuka 2 file {wb_name} bersamaan.")
+        except OSError:
+            wb = xlwings.Book(fname)
 
-    if not visible:
-        wb.app.visible = False
-    
-    wb.app.display_alerts = False
+        except ValueError:
+            import os
+            wb_name = fname.split(os.sep)[-1]
+            wb = xlwings.Book(wb_name)
+            if wb.fullname != fname:
+                print_with_timestamp(f'Error. Tidak bisa membuka 2 file {wb_name} bersamaan. Close file terlebih dahulu dan jalankan ulang program.')
+                time.sleep(10)
+                raise RuntimeError(f"Error membuka 2 file {wb_name} bersamaan.")
+
+        # hide alert
+        wb.app.display_alerts = False
+
+    else:
+        try:
+            wb = openpyxl.load_workbook(fname, data_only=True)
+        except Exception as e:
+            print_with_timestamp(f'Gagal membuka file dengan openpyxl: {str(e)}', 'error')
 
     return wb
 
 
-def extract_values(workbook, sheet_name, cell_map, autosave=False):
+def extract_values(workbook, sheet_name, cell_map, engine='xlwings', autosave=False):
     """Extract Sinoptik data values from synop file"""
-    wb = workbook
-    if autosave:
-        wb.save()
-    ws = wb.sheets[sheet_name]
-    data = DATA_SINOPTIK
+    if engine == 'xlwings':
+        if autosave:
+            workbook.save()
+        ws = workbook.sheets[sheet_name]
+    elif engine == 'openpyxl':
+        ws = workbook[sheet_name]
+    else:
+        raise ValueError('Engine excel tidak dikenali')
+
+    data = DATA_SINOPTIK.copy()
     for key, val in cell_map.items():
         s = None
-        if ':' in val: # join val in cell range
-            s = [clean_value(i) for i in ws[val].value if i != None]
-            if s:
-                s = ' '.join([str(i) for i in s if i != None])
-                if s == '' or s.isspace():
+        if ':' in val:  # join val in cell range
+            if engine == 'xlwings':
+                values = [clean_value(i) for i in ws[val].value if i is not None]
+            else:  # openpyxl
+                cells = ws[val]
+                values = [clean_value(cell.value) for row in cells for cell in row if cell.value is not None]
+
+            if values:
+                s = ' '.join(str(i) for i in values)
+                if not s.strip():
                     s = None
             else:
                 s = None
-
         else:
+            cell_value = ws[val].value
             if key in ME48_ROUNDED_VAL:
-                s = clean_value(ws[val].value, ME48_ROUNDED_VAL[key])
+                s = clean_value(cell_value, ME48_ROUNDED_VAL[key])
             else:
-                s = clean_value(ws[val].value)
+                s = clean_value(cell_value)
 
         data[key] = s
 
-    # beberapa penyesuaian data
-    data['wind_dir_deg_dd'] = 0 if data['wind_dir_deg_dd'] in ('CALM', 'calm', None, '') else data['wind_dir_deg_dd']
-    data['wind_speed_ff'] = 0 if data['wind_dir_deg_dd'] == 0 else data['wind_speed_ff']  
-    data['rainfall_last_mm'] = 0 if data['rainfall_last_mm'] in (None, '') else data['rainfall_last_mm']  
-    data['rainfall_last_mm'] = 8888 if data['rainfall_last_mm'] in ('TTU', 'ttu') else data['rainfall_last_mm']  
-    data['rainfall_6h_rrr'] = 8888 if data['rainfall_6h_rrr'] in ('TTU', 'ttu') else data['rainfall_6h_rrr']  
-    data['rainfall_24h_rrrr'] = 8888 if data['rainfall_24h_rrrr'] in ('TTU', 'ttu') else data['rainfall_24h_rrrr']  
-    data['rainfall_last_mm'] = 9999 if data['rainfall_last_mm'] in ('////', '///') else data['rainfall_last_mm']  
-    data['rainfall_6h_rrr'] = 9999 if data['rainfall_6h_rrr'] in ('////', '///') else data['rainfall_6h_rrr']  
-    data['rainfall_24h_rrrr'] = 9999 if data['rainfall_24h_rrrr'] in ('////', '///') else data['rainfall_24h_rrrr']  
-    data['pressure_reading_mb'] = 9999 if data['pressure_reading_mb'] in ('////', '///') else data['pressure_reading_mb']  
-    data['pressure_tend_3h_mb_ppp'] = 9999 if data['pressure_tend_3h_mb_ppp'] in ('////', '///') else data['pressure_tend_3h_mb_ppp']  
-    data['pressure_tend_24h_mb_ppp'] = 9999 if data['pressure_tend_24h_mb_ppp'] in ('////', '///') else data['pressure_tend_24h_mb_ppp']  
-    data['temp_max_c_txtxtx'] = 9999 if data['temp_max_c_txtxtx'] in ('////', '///') else data['temp_max_c_txtxtx']  
-    data['temp_min_c_tntntn'] = 9999 if data['temp_min_c_tntntn'] in ('////', '///') else data['temp_min_c_tntntn']  
-    data['evaporation_eq_indicator_ie'] = 0 if data['evaporation_eq_indicator_ie'] in (None, '') else data['evaporation_eq_indicator_ie']  
+    # penyesuaian pembacaan tipe data saat menggunakan openpyxl
+    if engine == 'openpyxl':
+        SHOULDBE_IN_INT = [
+            'cloud_cover_oktas_m', 'cloud_low_cover_oktas', 'cloud_med_cover_oktas',
+            'cloud_high_cover_oktas', 'cloud_layer_2_amt_oktas_ns', 'evaporation_eq_indicator_ie',
+            'land_cond', 'rainfall_indicator_ir', 'sunshine_h_sss', 'visibility_vv',
+            'weather_indicator_ix', 'wind_dir_deg_dd', 'wind_indicator_iw', 'wind_speed_ff',
+            'cloud_elevation_angle_ec_1'
+        ]
 
-    # Pertahankan nilai Kondisi Tanah dari Excel (jangan ambil dari evaporation_eq_indicator_ie)
-    raw_land_cond = data['land_cond']
-    if raw_land_cond in (None, ''):
-        data['land_cond'] = 0
-    else:
-        land_cond = int(float(raw_land_cond))
-        if land_cond not in SOIL:
-            raise ValueError(f"Kode land_cond tidak valid: {raw_land_cond}")
-        data['land_cond'] = land_cond
-      
-    data['encoded_synop'] = data['encoded_synop'].strip().replace('  ', ' ')  
+        SHOULDBE_IN_FLOAT = [
+            'cloud_layer_2_height_m_hshs', 'cloud_low_base_1', 'cloud_low_base_2',
+            'cloud_med_base_1', 'cloud_high_base_1', 'cloud_low_peak_1',
+            'temp_drybulb_c_tttttt', 'temp_dewpoint_c_tdtdtd', 'temp_wetbulb_c',
+            'temp_max_c_txtxtx', 'temp_min_c_tntntn', 'rainfall_last_mm', 'rainfall_6h_rrr',
+            'rainfall_24h_rrrr', 'evaporation_24hours_mm_eee',
+            'pressure_qff_mb_derived', 'pressure_qfe_mb_derived',
+            'pressure_tend_3h_mb_ppp', 'pressure_tend_24h_mb_ppp'
+        ]
+
+        for k in SHOULDBE_IN_INT:
+            v = data.get(k)
+            if isinstance(v, str):
+                try:
+                    data[k] = int(v)
+                except:
+                    pass
+
+        for k in SHOULDBE_IN_FLOAT:
+            v = data.get(k)
+            if isinstance(v, str):
+                try:
+                    data[k] = float(v)
+                except:
+                    pass
+
+
+    # beberapa penyesuaian data lainnya
+    data['wind_dir_deg_dd'] = 0 if data['wind_dir_deg_dd'] in ('CALM', 'calm', None, '') else data['wind_dir_deg_dd']
+    data['wind_speed_ff'] = 0 if data['wind_dir_deg_dd'] == 0 else data['wind_speed_ff']
+    data['rainfall_last_mm'] = 0 if data['rainfall_last_mm'] in (None, '') else data['rainfall_last_mm']
+    data['rainfall_last_mm'] = 8888 if data['rainfall_last_mm'] in ('TTU', 'ttu') else data['rainfall_last_mm']
+    data['rainfall_6h_rrr'] = 8888 if data['rainfall_6h_rrr'] in ('TTU', 'ttu') else data['rainfall_6h_rrr']
+    data['rainfall_24h_rrrr'] = 8888 if data['rainfall_24h_rrrr'] in ('TTU', 'ttu') else data['rainfall_24h_rrrr']
+    data['rainfall_last_mm'] = 9999 if data['rainfall_last_mm'] in ('////', '///') else data['rainfall_last_mm']
+    data['rainfall_6h_rrr'] = 9999 if data['rainfall_6h_rrr'] in ('////', '///') else data['rainfall_6h_rrr']
+    data['rainfall_24h_rrrr'] = 9999 if data['rainfall_24h_rrrr'] in ('////', '///') else data['rainfall_24h_rrrr']
+    data['pressure_reading_mb'] = 9999 if data['pressure_reading_mb'] in ('////', '///') else data['pressure_reading_mb']
+    data['pressure_tend_3h_mb_ppp'] = 9999 if data['pressure_tend_3h_mb_ppp'] in ('////', '///') else data['pressure_tend_3h_mb_ppp']
+    data['pressure_tend_24h_mb_ppp'] = 9999 if data['pressure_tend_24h_mb_ppp'] in ('////', '///') else data['pressure_tend_24h_mb_ppp']
+    data['temp_max_c_txtxtx'] = 9999 if data['temp_max_c_txtxtx'] in ('////', '///') else data['temp_max_c_txtxtx']
+    data['temp_min_c_tntntn'] = 9999 if data['temp_min_c_tntntn'] in ('////', '///') else data['temp_min_c_tntntn']
+    data['evaporation_eq_indicator_ie'] = 0 if data['evaporation_eq_indicator_ie'] in (None, '') else data['evaporation_eq_indicator_ie']
+    data['land_cond'] = 0 if data['land_cond'] in (None, '') else (int(float(data['land_cond'])) if str(data['land_cond']).replace('.', '', 1).isdigit() else data['land_cond'])
+
+    data['encoded_synop'] = data['encoded_synop'].strip().replace('  ', ' ')
     temp = []
     # excel menghapus 0 dari angka 2004, harusnya 02004, kembalikan
-    for i in data['encoded_synop'].split():  
-        if i.isdecimal() and len(i) == 4:  
-            temp.append("0"+i)  
-        else:  
-            temp.append(i)  
-      
-    data['encoded_synop'] = ' '.join(temp)  
+    for i in data['encoded_synop'].split():
+        if i.isdecimal() and len(i) == 4:
+            temp.append("0"+i)
+        else:
+            temp.append(i)
+
+    data['encoded_synop'] = ' '.join(temp)
 
     return data
+
+
+def read_excel(timestamp, engine='xlwings'):
+    "Read data based on timestamp"
+    synop_file = get_synop_path(PATH_TO_SYNOP, timestamp.year, timestamp.month, timestamp.day)
+    hour = timestamp.hour
+    sheet_name = get_sheet_name(hour)
+    cell_map = generate_new_sinoptik_cell_map(hour, SINOPTIK_CELL_MAP)
+    # ganti nilai cell perawanan & pressure
+    cell_map['8nhclcmch'] = get_cloud_cell(hour)
+    cell_map['57cde1'] = get_convective_cloud_cell(hour)[0]
+    cell_map['57cde2'] = get_convective_cloud_cell(hour)[1]
+    cell_map['80chshs1'] = get_cl_peak_cell(hour)[0]
+    cell_map['80chshs2'] = get_cl_peak_cell(hour)[1]
+    try:
+        if engine == 'xlwings':
+            wb = open_workbook(synop_file)
+            data = extract_values(wb, sheet_name, cell_map, 'xlwings', True)
+        else:
+            wb = open_workbook(synop_file, 'openpyxl')
+            data = extract_values(wb, sheet_name, cell_map, 'openpyxl')
+    except Exception as e:
+        print_with_timestamp('exception at read_excel ' + str(e))
+
+    return data
+
+
+def kill_excel_processes_and_reload():
+    """
+    Menutup semua proses Excel dan membuka ulang workbook synop saat ini.
+    """
+
+    for proc in psutil.process_iter(['pid', 'name']):
+        try:
+            if proc.info['name'] and 'EXCEL.EXE' in proc.info['name'].upper():
+                proc.kill()
+                print_with_timestamp(f"Menutup paksa excel")
+        except Exception as e:
+            print_with_timestamp(f"Gagal menutup paksa excel")
+            return 1
+
+    # Setelah Excel ditutup, buka ulang workbook
+    try:
+        now = arrow.utcnow()
+        synop_file = get_synop_path(PATH_TO_SYNOP, now.year, now.month, now.day)
+        wb = open_workbook(synop_file)
+        print_with_timestamp(f"Workbook {synop_file} berhasil dibuka ulang.")
+    except Exception as e:
+        print_with_timestamp(f"Gagal membuka ulang workbook: {e}", 'error')
+        return 1
+
+    return 0
+
+
+
+def write_excel(data: dict, callback: Callable = None):
+    print_with_timestamp(f'Mengisi data sinoptik {data["data_timestamp"]} ke excel...')
+    timestamp = arrow.get(data["data_timestamp"])
+    data_before = {}  # data dari 3 jam sebelumnya
+
+    try:
+        year = timestamp.year
+        month = timestamp.month
+        day = timestamp.day
+        hour = timestamp.hour
+        synop_file = get_synop_path(PATH_TO_SYNOP, year, month, day)
+        sheet_name = get_sheet_name(hour)
+        cell_map = generate_new_sinoptik_cell_map(hour, SINOPTIK_CELL_MAP)
+
+        # ganti nilai cell perawanan di encoded_synop
+        cell_map["8nhclcmch"] = get_cloud_cell(hour)
+        cell_map['57cde1'] = get_convective_cloud_cell(hour)[0]
+        cell_map['57cde2'] = get_convective_cloud_cell(hour)[1]
+        cell_map['80chshs1'] = get_cl_peak_cell(hour)[0]
+        cell_map['80chshs2'] = get_cl_peak_cell(hour)[1]
+
+        # data 3 hours before
+        for h in range(3, 0, -1):
+            dt_before = timestamp.shift(hours=-h)
+            prev_data = read_excel(dt_before)
+            data_before[h] = prev_data  # prev_data[1] = data 1 jam sebelumnya
+
+        # data 24 hours before, just extract qfe
+        if hour in (0, 12):
+            dt24_before = timestamp.shift(hours=-24)
+            prev24_data = read_excel(dt24_before)
+    except Exception as e:
+        print_with_timestamp('1st exception at write_excel ' + str(e))
+
+    try:
+
+        wb = open_workbook(synop_file)
+        ws = wb.sheets[sheet_name]
+        try:
+            if hour in (0, 6, 12, 18):
+                ws.select()
+        except Exception as e:
+            print_with_timestamp('2nd exception at write_excel ' + str(e))
+
+        for key in ('wind_dir_deg_dd', 'wind_speed_ff', 'pressure_qfe_mb_derived', 'pressure_qff_mb_derived',
+                    'temp_drybulb_c_tttttt', 'temp_wetbulb_c'):
+            # don't override
+            if not ws.range(cell_map[key]).value:
+                ws.range(cell_map['wind_dir_deg_dd']).value = data["wind_dir_deg_dd"]
+                ws.range(cell_map['wind_speed_ff']).value = data["wind_speed_ff"]
+                ws.range(cell_map['pressure_qfe_mb_derived']).value = data["pressure_qfe_mb_derived"]
+                ws.range(cell_map['pressure_qff_mb_derived']).value = data["pressure_qff_mb_derived"]
+                ws.range(cell_map['temp_drybulb_c_tttttt']).value = data["temp_drybulb_c_tttttt"]
+                ws.range(cell_map['temp_wetbulb_c']).value = data["temp_wetbulb_c"]
+
+        try:
+            if hour in (0, 12):
+                if not ws.range(cell_map['pressure_tend_24h_mb_ppp']).value and prev24_data['pressure_qfe_mb_derived']:
+                    ws.range(cell_map['pressure_tend_24h_mb_ppp']).value = round(data['pressure_qfe_mb_derived'] - prev24_data['pressure_qfe_mb_derived'], 1)
+                if hour == 12:
+                    if not ws.range(cell_map['temp_max_c_txtxtx']).value:
+                        if data['temp_max_c_txtxtx']:
+                            if data['temp_max_c_txtxtx'] != -9999:
+                                ws.range(cell_map['temp_max_c_txtxtx']).value = data["temp_max_c_txtxtx"]
+                elif hour == 0:
+                    if not ws.range(cell_map['temp_min_c_tntntn']).value:
+                        if data['temp_min_c_tntntn']:
+                            if data['temp_min_c_tntntn'] != -9999:
+                                ws.range(cell_map['temp_min_c_tntntn']).value = data["temp_min_c_tntntn"]
+        except Exception as e:
+            print_with_timestamp('3rd exception at write_excel ' + str(e))
+
+        # When empty, fill data with data from previous hour
+        try:
+            if data_before[1]:
+                for key in ('visibility_vv', 'weather_indicator_ix', 'present_weather_ww', 'past_weather_w1',
+                            'past_weather_w2', 'rainfall_indicator_ir', 'cloud_low_type_cl', 'cloud_low_base_1',
+                            'cloud_low_peak_1', 'cloud_low_dir_1', 'cloud_elevation_angle_ec_1', 'cloud_low_cover_oktas',
+                            'cloud_med_cover_oktas', 'cloud_high_cover_oktas', 'cloud_med_type_cm', 'cloud_high_type_ch',
+                            'cloud_med_dir_1', 'cloud_med_base_1', 'cloud_high_dir_1', 'cloud_high_base_1',
+                            'cloud_cover_oktas_m', 'cloud_layer_1_type_c', 'cloud_layer_1_height_m_hshs', 'cloud_layer_1_amt_oktas_ns',
+                            'cloud_layer_2_type_c', 'cloud_layer_2_height_m_hshs', 'cloud_layer_2_amt_oktas_ns', 'land_cond',
+                            '8nhclcmch', '57cde1', '57cde2', '80chshs1', '80chshs2'):
+                    if not ws.range(cell_map[key]).value:
+                        if key == 'weather_indicator_ix':
+                            ws.range(cell_map[key]).value = 2
+                        elif key == 'present_weather_ww':
+                            ws.range(cell_map[key]).value = 'Cld Unch'
+                        elif key in ('past_weather_w1', 'past_weather_w2'):
+                            ws.range(cell_map[key]).value = 'Cloudy +'
+                        elif key == 'rainfall_indicator_ir':
+                            ws.range(cell_map[key]).value = 3
+                        elif key == '8nhclcmch':
+                            ws.range(cell_map[key]).value = get_cloud_type_code(ws, cell_map)
+                        else:
+                            ws.range(cell_map[key]).value = data_before[1][key]
+
+                    # awan konvektif
+                    try:
+                        if key == '57cde1':
+                            if ws.range(cell_map['cloud_low_type_cl']).value:
+                                cl_val = ws.range(cell_map['cloud_low_type_cl']).value.lower()
+                                dl = str(ws.range(cell_map['cloud_low_dir_1']).value).lower()
+                                elev = ws.range(cell_map['cloud_elevation_angle_ec_1']).value
+                                if cl_val in ('cu', 'cu/sc'):
+                                    if dl and elev:
+                                        ws.range(cell_map['57cde1']).value = '8' + str(CLOUD_DIR[dl]) + str(CLOUD_ELEV[int(elev)])
+                                elif cl_val in ('cb', 'cb/sc'):
+                                    if dl and elev:
+                                        ws.range(cell_map['57cde1']).value = '9' + str(CLOUD_DIR[dl]) + str(CLOUD_ELEV[int(elev)])
+                                elif cl_val in ('cb/cu'):
+                                    if dl and elev:
+                                        ws.range(cell_map['57cde1']).value = '9' + str(CLOUD_DIR[dl]) + str(CLOUD_ELEV[int(elev)])
+                                        ws.range(cell_map['57cde1']).value = '8' + str(CLOUD_DIR[dl]) + str(CLOUD_ELEV[int(elev)])
+
+                        elif key == '80chshs1':
+                            if ws.range(cell_map['cloud_low_type_cl']).value:
+                                cl_peak = None # init
+                                cl_peak2 = None
+                                cl_val = ws.range(cell_map['cloud_low_type_cl']).value.lower()
+                                if ws.range(cell_map['cloud_low_peak_1']).value:
+                                    hshs = int(ws.range(cell_map['cloud_low_peak_1']).value)
+                                    cl_peak = calculate_hshs(hshs)
+                                if cl_val == 'cu':
+                                    if cl_peak:
+                                        ws.range(cell_map['80chshs1']).value = '8' + str(cl_peak)
+                                elif cl_val == 'cb':
+                                    if cl_peak:
+                                        ws.range(cell_map['80chshs1']).value = '9' + str(cl_peak)
+                                    hshs2 = int(ws.range(cell_map['cloud_low_peak_2']).value)
+                                    cl_peak2 = calculate_hshs(hshs2)
+                                    if cl_peak:
+                                        ws.range(cell_map['80chshs1']).value = '8' + str(cl_peak)
+                                    if cl_peak2:
+                                        ws.range(cell_map['80chshs1']).value = '9' + str(cl_peak2)
+
+                    except Exception as e:
+                        print_with_timestamp('4th exception at write_excel ' + str(e))
+
+            # data tendency dan hujan
+            if hour % 3 == 0:
+                # Tendency 3 jam
+                plist = [data_before[i]['pressure_qff_mb_derived'] for i in range(3, 0, -1)] + [data['pressure_qff_mb_derived']]
+                tendency = calculate_tendency(plist)
+                ws.range(cell_map['5appp']).value = tendency
+                if hour == 0:
+                    if not ws.range(cell_map['pressure_tend_3h_mb_ppp']).value:
+                        ws.range(cell_map['pressure_tend_3h_mb_ppp']).value = round(plist[3] - plist[0], 1)
+
+                # Isi rainfall_last_mm dan sesuaikan indicator cuaca dan hujan
+                if not ws.range(cell_map['rainfall_last_mm']).value:
+                    ws.range(cell_map['rainfall_last_mm']).value = data['rainfall_last_mm']
+                    if ws.range(cell_map['rainfall_last_mm']).value > 0:
+                        ws.range(cell_map['weather_indicator_ix']).value = 1
+
+
+                # Hujan 6 jam
+                if hour in (0, 6, 12, 18):
+                    if not ws.range(cell_map['rainfall_6h_rrr']).value:
+                        # hujan 6 jam lalu tercatat di data 3 jam lalu
+                        r3h = get_data_from_db_based_on_timestamp(
+                            timestamp.shift(hours=-3).format('YYYY-MM-DD HH:00:00'),
+                            column='rainfall_last_mm'
+                        )
+                        val_now = data['rainfall_last_mm'] if isinstance(data['rainfall_last_mm'], (int, float)) else 0
+                        val_3h = r3h if isinstance(r3h, (int, float)) else 0
+                        ws.range(cell_map['rainfall_6h_rrr']).value = round(val_now + val_3h, 1)
+
+                # Hujan 24 jam (khusus jam 00 UTC)
+                if hour == 0:
+                    if not ws.range(cell_map['rainfall_24h_rrrr']).value:
+                        acc_24h = 0
+                        for h in range(21, 0, -3):
+                            dt_h = timestamp.shift(hours=-h)
+                            rdata = get_data_from_db_based_on_timestamp(dt_h.format('YYYY-MM-DD HH:00:00'), column='rainfall_last_mm')
+                            if isinstance(rdata, (float, int)):
+                                acc_24h += rdata
+                        if isinstance(data['rainfall_last_mm'], (float, int)):
+                            acc_24h += data['rainfall_last_mm']
+                        ws.range(cell_map['rainfall_24h_rrrr']).value = round(acc_24h, 1)
+
+                # sesuaikan indicator cuaca
+                if ws.range(cell_map['rainfall_last_mm']).value > 0:
+                    ws.range(cell_map['weather_indicator_ix']).value = 1
+
+                # sesuaikan indicator hujan
+                if hour in (3, 9, 15, 21):
+                    if ws.range(cell_map['rainfall_last_mm']).value > 0:
+                        ws.range(cell_map['rainfall_indicator_ir']).value = 2
+                elif hour in (0, 6, 12, 18):
+                    if ws.range(cell_map['rainfall_last_mm']).value > 0:
+                        if ws.range(cell_map['rainfall_6h_rrr']).value > 0:
+                            ws.range(cell_map['rainfall_indicator_ir']).value = 0
+                    else:
+                        if ws.range(cell_map['rainfall_6h_rrr']).value > 0:
+                            ws.range(cell_map['rainfall_indicator_ir']).value = 1
+
+
+        except Exception as e:
+            print_with_timestamp('5th exception at write_excel ' + str(e))
+
+        wb.save()
+
+        # Call the callback on complete
+        if callback:
+            callback()
+
+    except Exception as e:
+        print_with_timestamp('6th exception at write_excel ' + str(e))
 
 
 # khusus perawanan
@@ -352,6 +676,28 @@ def get_cloud_cell(hour):
     return cell
 
 
+def get_cloud_type_code(ws, cell_map):
+    """Code for 8NhClCmCh"""
+    cloud_values = [
+        ws.range(cell_map['cloud_low_cover_oktas']).value,
+        ws.range(cell_map['cloud_low_type_cl']).value,
+        ws.range(cell_map['cloud_med_type_cm']).value,
+        ws.range(cell_map['cloud_high_type_ch']).value
+    ]
+
+    # Jika ada yang None atau kosong, return None
+    if any(val is None or val == "" for val in cloud_values):
+        return None
+
+    # konversi
+    cloud_values[0] = int(cloud_values[0])
+    cloud_values[1] = ME48_OPTIONS['cloud_low_type_cl'][cloud_values[1].lower()]
+    cloud_values[2] = ME48_OPTIONS['cloud_med_type_cm'][cloud_values[2].lower()]
+    cloud_values[3] = ME48_OPTIONS['cloud_high_type_ch'][cloud_values[3].lower()]
+
+    return "8" + "".join(map(str, cloud_values))
+
+
 # khusus perawanan konvektif
 def get_convective_cloud_cell(hour):
     """return cell location for convective cloud, first and second 57xxx sections"""
@@ -359,7 +705,7 @@ def get_convective_cloud_cell(hour):
     if hour == 0:
         cell = ('AI14','AM14')
     elif hour == 12:
-        cell = ('AE14', 'AG14') 
+        cell = ('AE14', 'AG14')
     elif hour in  (6, 18):
         cell = ('AC14','AF14')
     elif hour in (1, 7, 13, 19):
@@ -372,7 +718,7 @@ def get_convective_cloud_cell(hour):
         cell = ('Y34', 'AB34')
     elif hour in (5, 11, 17, 23):
         cell = ('Y39', 'AB39')
-    
+
     return cell
 
 
@@ -381,7 +727,7 @@ def get_cl_peak_cell(hour):
     """return cell location for convective cloud, first and second 80xxx sections"""
     cell = None
     if hour == 0:
-        cell = ('BA14','BC14') 
+        cell = ('BA14','BC14')
     elif hour == 12:
         cell = ('AW14','AZ14')
     elif hour in (6, 18):
@@ -396,7 +742,7 @@ def get_cl_peak_cell(hour):
         cell = ('AP34', 'AS34')
     elif hour in (5, 11, 17, 23):
         cell = ('AP39', 'AS39')
-    
+
     return cell
 
 
@@ -404,7 +750,7 @@ def normalize_data(data):
     # currently only wind
     if data:
         data['wind_speed_ff'] = data['wind_speed_ff'] * 1.94384  # m/s to knot
-        if data['wind_speed_ff'] < 4.0:
+        if data['wind_speed_ff'] < 1.0:
             data['wind_speed_ff'] = 0
             data['wind_dir_deg_dd'] = 0
         else:
@@ -421,13 +767,13 @@ def extract_cloud(synop_code):
 
 
 def get_wind_direction(degree):
-    if degree % 5 != 0: 
+    if degree % 5 != 0:
         degree = 5 * round(degree / 5)
         return get_wind_direction(degree)
-    
+
     if str(degree) in ("CALM", "calm", "0", 'None'):
         return "CALM"
-    
+
     else:
         degree = int(degree)
         if 25 <= degree <= 65:
@@ -472,7 +818,7 @@ def calculate_hshs(cl_peak):
         return cl_peak // 30
     elif cl_peak >= 1800:
         return cl_peak // 300 + 50
-    
+
 
 def calculate_tendency(plist):
     tendency = None
@@ -547,34 +893,34 @@ def create_connection(db_file):
     return conn
 
 
-def read_data(table, condition=None, column='all'):  
-    """Read data record. Return list of dictionaries with column names as keys."""  
-    conn = create_connection(DB_NAME)  
-    cursor = conn.cursor()  
-      
-    if condition:  
-        if column == 'all':  
-            sql = "SELECT * FROM %s WHERE %s" % (table, condition)  
-        else:  
-            sql = "SELECT %s FROM %s WHERE %s" % (column, table, condition)  
-    else:  
-        if column == 'all':  
-            sql = "SELECT * FROM %s" % (table,)  
-        else:  
-            sql = "SELECT %s FROM %s" % (column, table,)  
-      
-    cursor.execute(sql)  
-    results = cursor.fetchall()  
-      
-    # Get column names from cursor description  
-    column_names = [description[0] for description in cursor.description]  
-      
-    if results:  
-        # Convert each row to a dictionary with column names as keys  
-        result_dicts = [dict(zip(column_names, row)) for row in results]  
-        return result_dicts  
-    else:  
-        return None  
+def read_data(table, condition=None, column='all'):
+    """Read data record. Return list of dictionaries with column names as keys."""
+    conn = create_connection(DB_NAME)
+    cursor = conn.cursor()
+
+    if condition:
+        if column == 'all':
+            sql = "SELECT * FROM %s WHERE %s" % (table, condition)
+        else:
+            sql = "SELECT %s FROM %s WHERE %s" % (column, table, condition)
+    else:
+        if column == 'all':
+            sql = "SELECT * FROM %s" % (table,)
+        else:
+            sql = "SELECT %s FROM %s" % (column, table,)
+
+    cursor.execute(sql)
+    results = cursor.fetchall()
+
+    # Get column names from cursor description
+    column_names = [description[0] for description in cursor.description]
+
+    if results:
+        # Convert each row to a dictionary with column names as keys
+        result_dicts = [dict(zip(column_names, row)) for row in results]
+        return result_dicts
+    else:
+        return None
 
 
 def check_data_exist(table, condition):
@@ -591,27 +937,27 @@ def check_data_exist(table, condition):
 def insert_data(conn, table, data):
     """Insert data, masih perlu optimasi, tapi untuk lokal masih bisalah"""
     cursor = conn.cursor()
-    
+
     # Get existing table columns
     cursor.execute(f"PRAGMA table_info({table})")
     table_columns = [column[1] for column in cursor.fetchall()]
-    
+
     # Filter data to only include existing columns
     filtered_data = {k: v for k, v in data.items() if k in table_columns}
-    
+
     if not filtered_data:
         print_with_timestamp('No valid columns found in data.')
         return
-    
+
     placeholders = ', '.join(['?'] * len(filtered_data))
     columns = ', '.join(filtered_data.keys())
     sql = "INSERT INTO %s ( %s ) VALUES ( %s )" % (table, columns, placeholders)
-    
+
     try:
         cursor.execute(sql, list(filtered_data.values()))
         conn.commit()
     except sqlite3.IntegrityError as err:
-        print_with_timestamp('Data di jam yang sama sudah ada.')
+        print_with_timestamp('Data di jam yang sama sudah ada di database.')
 
 
 def update_data(table, data, condition=None):
@@ -673,7 +1019,7 @@ def save_data_to_db(data_timestamp, db_name, table, data, update='N'):
             print_with_timestamp(f"Data {data['data_timestamp']} berhasil disimpan ke database.")
 
     conn.close()
- 
+
 
 def get_yesterday_data(timestamp, column='all'):
     yesterday = arrow.get(f'{timestamp}').shift(days=-1)
@@ -681,15 +1027,13 @@ def get_yesterday_data(timestamp, column='all'):
     data = read_data(ME48_TABLE_NAME, condition, column)
 
     return data
-    
 
-def save_sinoptik_data(timestamp, bmkgsatu_only=False):
+
+def extract_sinoptik_data(timestamp):
     """
-    Save data to the database. The timestamp can be a single timestamp in 'YYYYMMDDHH' format, or a range of timestamps
-    specified with a hyphen (e.g., "2024100500 - 2023100523").
-    :param timestamp: A single timestamp string or a range of timestamps as a string.
+    Save data to the database. The timestamp can be a single timestamp in 'YYYYMMDDHH' format,
+    or a range of timestamps specified with a hyphen (e.g., "2024100500 - 2023100523").
     """
-    # Split the input string by hyphen to determine if it's a range
     if '-' in timestamp:
         start_ts, end_ts = map(str.strip, timestamp.strip().split('-'))
         start_dt = parse_timestamp(start_ts)
@@ -702,48 +1046,58 @@ def save_sinoptik_data(timestamp, bmkgsatu_only=False):
     data_dict = {}
     current_dt = start_dt
 
+    current_excel_date = None
+    current_workbook = None
+    current_engine = None
+
     while current_dt <= end_dt:
         try:
-            synop_file = get_synop_path(PATH_TO_SYNOP, current_dt.year, current_dt.month, current_dt.day)
-            wb = open_workbook(synop_file)
+            use_xlwings = (arrow.utcnow() - current_dt).days <= 1
+            excel_date = current_dt.date()
+
+            # Ganti workbook hanya jika tanggalnya berubah
+            if excel_date != current_excel_date or current_workbook is None:
+                synop_file = get_synop_path(PATH_TO_SYNOP, current_dt.year, current_dt.month, current_dt.day)
+
+                if use_xlwings:
+                    current_workbook = open_workbook(synop_file)
+                    current_engine = 'xlwings'
+                else:
+                    current_workbook = open_workbook(synop_file, 'openpyxl')
+                    current_engine = 'openpyxl'
+
+                current_excel_date = excel_date
 
             cell_map = generate_new_me48_cell_map(current_dt.hour, ME48_CELL_MAP)
-            if (arrow.utcnow() - current_dt).days == 0:
-                data = extract_values(wb, ME48_WS_NAME, cell_map, autosave=True)
-            else:
-                data = extract_values(wb, ME48_WS_NAME, cell_map)
+
+            data = extract_values(current_workbook, ME48_WS_NAME, cell_map, current_engine, autosave=(current_engine == 'xlwings'))
+            # add data_timestamp to data
+            data['data_timestamp'] = arrow.get(current_dt).format('YYYY-MM-DD HH:00:00')
 
             condition = f"data_timestamp=\"{arrow.get(current_dt).format('YYYY-MM-DD HH:00:00')}\""
-            # QC Data list that not pass
             errors = simple_qc(current_dt, data)
             if errors:
                 raise ValueError(f"{str(errors)}")
 
-            # Jika data sudah ada, update, jika tidak, insert baru
-            update_flag = 'Y' if check_data_exist(ME48_TABLE_NAME, condition) else 'N'
-            save_data_to_db(current_dt, DB_NAME, ME48_TABLE_NAME, data, update=update_flag)
+            # hanya update database untuk data hari ini atau kemarin (menggunakan xlwings)
+            # openpyxl tidak menyentuh database, hanya untuk baca excel langsung, flag khusus X
+            if current_engine == 'xlwings':
+                update_flag = 'Y' if check_data_exist(ME48_TABLE_NAME, condition) else 'N'
+                save_data_to_db(current_dt, DB_NAME, ME48_TABLE_NAME, data, update=update_flag)
+            else:
+                print_with_timestamp(f"Data {arrow.get(current_dt).format('YYYYMMDDHH')} berhasil dibaca dari excel.")
 
-            db_data = read_data(ME48_TABLE_NAME, condition)
-            if db_data:
-                db_data = db_data[0]
-                # update jadi semua properties data sinoptik
-                data.update(DATA_SINOPTIK)
-                data_dict[arrow.get(current_dt).format('YYYYMMDDHH')] = db_data
+            if data:
+                data_dict[arrow.get(current_dt).format('YYYYMMDDHH')] = {**DATA_SINOPTIK, **data}
             else:
                 print_with_timestamp(f"Data sinoptik {arrow.get(current_dt).format('YYYYMMDDHH')} tidak ditemukan.")
 
         except (FileNotFoundError, ValueError, Exception) as e:
-            print_with_timestamp(f"Error pada {arrow.get(current_dt).format('YYYYMMDDHH')}: {str(e)}")
-            raise Exception(f"Terjadi error pada {arrow.get(current_dt).format('YYYYMMDDHH')}: {str(e)}")
- 
+            print_with_timestamp(f"Error pada data sinoptik {arrow.get(current_dt).format('YYYYMMDDHH')}: {str(e)}")
+            raise Exception(f"Terjadi error pada data sinoptik {arrow.get(current_dt).format('YYYYMMDDHH')}: {str(e)}")
 
-        # Move to the next hour
         current_dt = arrow.get(current_dt).shift(hours=1)
-    
-        # Close excel if no longer needed
-        if (arrow.utcnow() - arrow.get(current_dt)).days > 1:
-            wb.app.quit()
-    # return dictionary of data_dict with respective YYYYMMDDHH key
+
     return data_dict
 
 
@@ -761,7 +1115,7 @@ def get_last_tbk(timestamp):
     if hour == 0:
         yesterday = arrow.get(f'{year:04}-{month:02}-{day:02}').shift(days=-1)
         condition = f"date(data_timestamp)='{yesterday.year:04}-{yesterday.month:02}-{yesterday.day:02}'"
-        tbk_min_list = read_data(ME48_TABLE_NAME, condition, column='data_timestamp, temp_drybulb_c_tttttt') 
+        tbk_min_list = read_data(ME48_TABLE_NAME, condition, column='data_timestamp, temp_drybulb_c_tttttt')
         if tbk_min_list:
             tbk_min = min([i for i in tbk_min_list[1:]], key=lambda t: t['temp_drybulb_c_tttttt']) # exclude last 00 UTC
         return tbk_min
@@ -829,12 +1183,6 @@ def simple_qc(timestamp, data):
     except Exception as e:
         qc_list.append(f'Error dalam pengecekan suhu min/max: {e}')
 
-    # Perawanan
-    try:
-        extract_cloud(data['encoded_synop'])  # Jika gagal, berarti kode salah
-    except Exception:
-        qc_list.append(f'Kode perawanan jam {hour:02d} salah atau tidak diisi.')
-
     return qc_list  # Kembalikan daftar error
 
 
@@ -867,7 +1215,7 @@ def create_sinoptik_data_timestamp(data_timestamp=None):
     """Create id for data sinoptik from %Y-%m-%d %H:%M:%S to %Y-%m-%d T%H"""
     if data_timestamp is None:
         data_timestamp = arrow.now()
-    
+
     dt = arrow.get(data_timestamp)
     formatted_timestamp = dt.format('YYYY-MM-DD[T]HH')
     # id is 1_sinoptik_ + formatted_timestamp
@@ -878,7 +1226,7 @@ def create_sinoptik_data_id(data_timestamp=None):
     """Create id for data sinoptik from %Y-%m-%d %H:%M:%S to %Y-%m-%d T%H"""
     if data_timestamp is None:
         data_timestamp = arrow.now()
-    
+
     formatted_timestamp = create_sinoptik_data_timestamp(data_timestamp)
 
     # id is 1_sinoptik_ + formatted_timestamp
@@ -887,13 +1235,13 @@ def create_sinoptik_data_id(data_timestamp=None):
 
 def create_encoded_synop(synop_string):
     """Create encoded synop message using synop string from excel"""
-    encoded_synop_str = synop_string.replace(' Z ', ' \n').replace(' 333 ', ' \n  333 ')
+    encoded_synop_str = synop_string.replace(' Z ', ' \n').replace(' 333 ', '\n  333 ')
     return encoded_synop_str
 
 
 def create_encoded_synop_with_header(synop_string, data_timestamp):
     """Create encoded synop message with header"""
-    encoded_synop_str = synop_string.replace(' Z ', ' \n').replace(' 333 ', ' \n  333 ')
+    encoded_synop_str = synop_string.replace(' Z ', ' \n').replace(' 333 ', '\n  333 ')
     dt = arrow.get(data_timestamp)
     dt_formatted = dt.format('DDHH') + '00'
     if dt.hour in (0, 6, 12, 18):
@@ -938,55 +1286,55 @@ def mutate_sinoptik_data_before_sent(data=None, bmkgsatu_only=False):
 
     sinoptik_data = data.copy()
 
-    # common
+    # observer_id awal di excel masih string nama, konversi ke id
     sinoptik_data["observer_id"] = get_obs_id(sinoptik_data["observer_id"])
-    cloud_code = extract_cloud(sinoptik_data['encoded_synop'])
-    if not cloud_code:  
-        cloud_code = CLOUD_DEFAULT_CODE
-    else:
-        sinoptik_data['cloud_cover_oktas_m'] = cloud_code[1]  
-        sinoptik_data['cloud_low_type_cl'] = cloud_code[2]  
-        sinoptik_data['cloud_med_type_cm'] = cloud_code[3]  
-        sinoptik_data['cloud_high_type_ch'] = cloud_code[4]
-    
-    for key in ME48_LIST:  
-        val = sinoptik_data[key]  
-          
-        # kode hujan TTU dan lainnya  
-        if val in (0.0, 8888.0, 9999.0):  
-            if val == 0.0:  
-                val = 0  
-            elif val == 8888.0:  
-                val = 8888  
-            elif val == 9999.0:  
-                val = 9999  
-            sinoptik_data[key] = val  
-  
-        if isinstance(val, str) and key not in ('encoded_synop',):  
-            val = val.lower()  
-            sinoptik_data[key] = val
-  
-        # convert all string value except cl, nh, cm, ch, observer  
-        if key in ME48_OPTS and key not in ('cloud_low_type_cl', 'cloud_cover_oktas_m', 'cloud_med_type_cm', 'cloud_high_type_ch', 'observer_id') and isinstance(val, str):  
-            val = ME48_OPTS[key][val]  
+    # observer_name tidak wajib dikirim kalau kosong?
+    if sinoptik_data["observer_id"]:
+        sinoptik_data["observer_name"] = OBSERVER_NAME[sinoptik_data["observer_id"]]
+
+    for key in list(ME48_CELL_MAP.keys()):
+        val = sinoptik_data[key]
+
+        # kode hujan TTU dan lainnya
+        if val in (0.0, 8888.0, 9999.0):
+            if val == 0.0:
+                val = 0
+            elif val == 8888.0:
+                val = 8888
+            elif val == 9999.0:
+                val = 9999
             sinoptik_data[key] = val
 
-    keys = [
-        "cloud_low_type_cl", "cloud_low_cover_oktas", "cloud_med_cover_oktas",
-        "cloud_high_cover_oktas", "cloud_med_type_cm", "cloud_high_type_ch",
-        "cloud_cover_oktas_m", "cloud_layer_1_type_c", "cloud_layer_2_type_c",
-        "cloud_layer_3_type_c","cloud_low_type_1", "cloud_med_type_1", "cloud_high_type_1", 
-        "cloud_low_cover_1", "cloud_med_cover_1", "cloud_high_cover_1", "rainfall_24h_rrrr"
-        ]
-    
-    for key in keys:  
-        sinoptik_data[key] = str(sinoptik_data.get(key)) if sinoptik_data.get(key) is not None else None
+        if isinstance(val, str) and key not in ('encoded_synop',):
+            val = val.lower()
+            sinoptik_data[key] = val
+
+        # convert all string value
+        if key in ME48_OPTIONS and val != None:
+            try:
+                val = ME48_OPTIONS[key][val]
+                sinoptik_data[key] = val
+            except KeyError:
+                # example: key 1 instead of '1'
+                try:
+                    val = ME48_OPTIONS[key][val]
+                    sinoptik_data[key] = val
+                except KeyError as e:
+                    raise RuntimeError(f"Ada kesalahan input nilai {val} di isian {key}")
+
+
+    sinoptik_data["rainfall_24h_rrrr"] = str(sinoptik_data["rainfall_24h_rrrr"]) if sinoptik_data["rainfall_24h_rrrr"] is not None else None
+    sinoptik_data["cloud_low_cover_1"] = sinoptik_data["cloud_low_cover_oktas"]
+    sinoptik_data["cloud_med_cover_1"] = sinoptik_data["cloud_med_cover_oktas"]
+    sinoptik_data["cloud_high_cover_1"] = sinoptik_data["cloud_high_cover_oktas"]
+
+    sinoptik_data['encoded_synop'] = create_encoded_synop(sinoptik_data['encoded_synop'])
+    sinoptik_data["data_timestamp"] = create_sinoptik_data_timestamp(sinoptik_data["data_timestamp"])
+
 
     # only when direct to bmkgsatu
     if bmkgsatu_only:
-        sinoptik_data['encoded_synop'] = create_encoded_synop(sinoptik_data['encoded_synop'])
         sinoptik_data['encoded_synop_with_header'] = create_encoded_synop_with_header(sinoptik_data['encoded_synop'], sinoptik_data['data_timestamp'])
-        sinoptik_data["data_timestamp"] = create_sinoptik_data_timestamp(sinoptik_data["data_timestamp"])
         sinoptik_data["id"] = create_sinoptik_data_id(sinoptik_data["data_timestamp"])
         sinoptik_data["entry_user"] = 1
         sinoptik_data["sandi_tr"] = 7
@@ -1024,12 +1372,17 @@ def send_to_bmkgsabang(url=None, data=None):
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
         response = requests.request("POST", url, headers=headers, json=data, verify=False)
 
+        # validasi error di laravel
+        if response.status_code == 422:
+            error_detail = response.json()
+            raise Exception(error_detail.get("message") or str(error_detail))
+
         if response.status_code == 409:  # Jika data sudah ada
             print_with_timestamp("Data sudah ada, mengupdate dengan data terbaru...")
             # Ambil ID dari respons server
             existing_data = response.json()
             resource_id = existing_data.get('data', {}).get('id')
-            
+
             if resource_id:
                 # Update URL dengan ID resource
                 update_url = f"{url}/{resource_id}"
@@ -1044,8 +1397,188 @@ def send_confirmation(message, confirm_timeout=10):
     print(message)
     print()
     response = wait_for_input('Konfirmasi pengiriman? Yes/No/Reload? (Y/N/R): ', timeout=confirm_timeout, default='Y')
-    
+
     return response
+
+
+# Fastapi server stuff
+caddy_process = None
+
+def start_caddy():
+    global caddy_process
+    try:
+        caddy_exe_path = "caddy.exe"
+        caddyfile_path = "Caddyfile"
+
+        if not os.path.isfile(caddy_exe_path):
+            print_with_timestamp("caddy.exe tidak ditemukan, lanjut tanpa Caddy.")
+            return
+
+        if not os.path.isfile(caddyfile_path):
+            print_with_timestamp("Caddyfile tidak ditemukan, lanjut tanpa Caddy.", 'error')
+            return
+
+        print_with_timestamp("Menjalankan Caddy server...")
+        caddy_process = subprocess.Popen(
+            [caddy_exe_path, "run", "--config", caddyfile_path, "--adapter", "caddyfile"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        print_with_timestamp("Caddy server berhasil dijalankan.")
+    except Exception as e:
+        print_with_timestamp(f"Gagal menjalankan Caddy: {e}", 'error')
+
+
+def stop_caddy():
+    global caddy_process
+    if caddy_process:
+        print_with_timestamp("Menghentikan Caddy server...")
+        caddy_process.send_signal(signal.SIGINT)
+        caddy_process.wait()
+        print_with_timestamp("Caddy server dihentikan.")
+
+
+def generate_audio():
+    p = pyaudio.PyAudio()
+    stream = p.open(format=pyaudio.paInt16, channels=1, rate=44100, input=True, frames_per_buffer=1024)
+
+    def audio_generator():
+        try:
+            while True:
+                yield stream.read(1024)
+        finally:
+            stream.stop_stream()
+            stream.close()
+            p.terminate()
+            print_with_timestamp("Audio stream ditutup.")
+
+    return audio_generator()
+
+
+def generate_video():
+    max_failed_reads = 5
+    max_reconnect_attempts = 3
+    reconnect_delay_seconds = 2
+
+    target_fps = 5
+    frame_interval = 1.0 / target_fps
+    last_frame_time = 0
+
+    def open_camera():
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            print_with_timestamp('Gagal membuka kamera.')
+            return None
+        print_with_timestamp('Kamera berhasil dibuka.')
+        return cap
+
+    cap = open_camera()
+    if cap is None:
+        return
+
+    failed_reads = 0
+    reconnect_attempts = 0
+
+    try:
+        while True:
+            now = time.time()
+            if now - last_frame_time < frame_interval:
+                time.sleep(0.005)
+                continue
+
+            success, frame = cap.read()
+            if not success:
+                failed_reads += 1
+                print_with_timestamp('Gagal membaca frame ({failed_reads}x).')
+
+                if failed_reads >= max_failed_reads:
+                    cap.release()
+                    reconnect_attempts += 1
+                    print_with_timestamp('Mencoba reconnect kamera (percobaan {reconnect_attempts})...')
+                    time.sleep(reconnect_delay_seconds)
+
+                    cap = open_camera()
+                    failed_reads = 0
+
+                    if cap is None:
+                        print_with_timestamp('Reconnect kamera gagal.')
+                        if reconnect_attempts >= max_reconnect_attempts:
+                            print_with_timestamp('Terlalu banyak reconnect gagal, menyerah.')
+                            break
+                    continue
+                else:
+                    continue
+
+            # Reset hitungan gagal kalau berhasil
+            failed_reads = 0
+            reconnect_attempts = 0
+            last_frame_time = now
+
+            # Tambahkan timestamp ke frame
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") + ' WIB'
+            height, width, _ = frame.shape
+            text_size, _ = cv2.getTextSize(timestamp, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            text_width, text_height = text_size
+            x = width - text_width - 10
+            y = height - 10
+
+            cv2.putText(
+                frame,
+                timestamp,
+                (x, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+                cv2.LINE_AA
+            )
+
+            # Encode ke JPEG
+            _, jpeg = cv2.imencode('.jpg', frame)
+            frame_bytes = jpeg.tobytes()
+
+            yield (
+                b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n'
+            )
+
+    finally:
+        if cap:
+            cap.release()
+            print_with_timestamp('Kamera OFF.')
+
+
+def take_screenshot():
+    """Ambil screenshot, baik menggunakan perintah eksternal atau module mss"""
+    try:
+        print_with_timestamp('Mengambil screenshot layar', 'debug')
+        with mss.mss() as sct:
+            sct.shot(output='sinoptik.jpg')
+        print_with_timestamp('Berhasil mengambil screenshot', 'debug')
+
+    except Exception as e:
+        print_with_timestamp(f'Gagal mengambil screenshot layar: {e}')
+
+
+def upload_image():
+    """Upload screenshot dengan retry maksimal 3 kali"""
+    headers = {'Authorization': f'Bearer {BMKGSABANG_TOKEN}'}
+    url = f'{BMKGSABANG_URL}/api/peralatan/{DEVICE_ID}?_method=PUT'
+
+    if not os.path.exists('sinoptik.jpg'):
+        return
+
+    try:
+        print_with_timestamp(f'Mengupload screenshot layar', 'debug')
+        with open('sinoptik.jpg', 'rb') as f:
+            files = {'image': f}
+            response = requests.post(url, headers=headers, files=files, verify=False, timeout=15)
+            response.raise_for_status()
+            print_with_timestamp('Berhasil mengupload screenshot', 'debug')
+            return
+    except requests.RequestException as e:
+        print_with_timestamp(f'Gagal mengupload screenshot: {e}', 'error')
+
 
 if __name__ == '__main__':
     pass
